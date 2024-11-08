@@ -787,20 +787,50 @@ def download_playlist(
                 sys.exit(1)
 
         tracknumber_digits = len(str(len(playlist.tracks)))
+
+        # first 5 tracks of a resolved playlist include full info (BasicTrack)
+        # rest of the tracks are simply just id & some other stuff (MiniTrack)
+        # we want to keep the tracks with full info, then fetch information
+        # about the rest in chunks of 50
+        offset = kwargs.get("playlist_offset", 0)
+
+        tracks: List[BasicTrack] = []
+        ids = []
         for counter, track in itertools.islice(
             enumerate(playlist.tracks, 1),
-            kwargs.get("playlist_offset", 0),
+            offset,
+            None,
+        ):
+            if (counter + offset) <= 5 and isinstance(track, BasicTrack):
+                tracks.append(track)
+                continue
+
+            ids.append(track.id)
+
+        # chunk ids array into 50s
+        if len(ids) > 0:
+            chunk_size = 50
+            for i in range(0, len(ids), chunk_size):
+                chunk_ids = ids[i:i + chunk_size]
+
+                if playlist.secret_token:
+                    chunk_tracks = client.get_tracks(chunk_ids, playlist.id, playlist.secret_token)
+                else:
+                    chunk_tracks = client.get_tracks(chunk_ids)
+
+                tracks.extend([track for track in chunk_tracks if isinstance(track, BasicTrack)])
+
+        # download tracks
+        for counter, track in itertools.islice(
+            enumerate(playlist.tracks, 1),
+            offset,
             None,
         ):
             logger.debug(track)
             logger.info(f"Track n°{counter}")
             playlist_info["tracknumber_int"] = counter
             playlist_info["tracknumber"] = str(counter).zfill(tracknumber_digits)
-            if isinstance(track, MiniTrack):
-                if playlist.secret_token:
-                    track = client.get_tracks([track.id], playlist.id, playlist.secret_token)[0]
-                else:
-                    track = client.get_track(track.id)  # type: ignore[assignment]
+
             assert isinstance(track, BasicTrack)
             download_track(
                 client,
@@ -809,6 +839,30 @@ def download_playlist(
                 playlist_info,
                 kwargs["strict_playlist"],
             )
+
+
+        # for counter, track in itertools.islice(
+        #     enumerate(playlist.tracks, 1),
+        #     offset,
+        #     None,
+        # ):
+        #     logger.debug(track)
+        #     logger.info(f"Track n°{counter}")
+        #     playlist_info["tracknumber_int"] = counter
+        #     playlist_info["tracknumber"] = str(counter).zfill(tracknumber_digits)
+        #     if isinstance(track, MiniTrack):
+        #         if playlist.secret_token:
+        #             track = client.get_tracks([track.id], playlist.id, playlist.secret_token)[0]
+        #         else:
+        #             track = client.get_track(track.id)  # type: ignore[assignment]
+        #     assert isinstance(track, BasicTrack)
+        #     download_track(
+        #         client,
+        #         track,
+        #         kwargs,
+        #         playlist_info,
+        #         kwargs["strict_playlist"],
+        #     )
     finally:
         if not kwargs.get("no_playlist_folder"):
             os.chdir("..")
@@ -885,6 +939,10 @@ def download_original_file(
 ) -> Tuple[Optional[str], bool]:
     logger.info("Downloading the original file.")
     to_stdout = is_downloading_to_stdout(kwargs)
+
+    if not track.downloadable:
+        logger.info("Track is not downloadable.")
+        return None, False
 
     # Get the requests stream
     url = client.get_track_original_download(track.id, track.secret_token)
